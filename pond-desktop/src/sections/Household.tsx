@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button, Switch } from "@heroui/react";
-import { Users, RefreshCw } from "lucide-react";
+import { Users, RefreshCw, Plus } from "lucide-react";
 import { api } from "../api/PondApiClient";
 import { ApiError } from "../api/types";
 import type { Device, HouseholdProfile, HouseholdRole } from "../api/types";
@@ -315,6 +315,112 @@ function DeviceAccessModal({ profile, onClose, onFlash }: DeviceAccessModalProps
   );
 }
 
+// ─── Create-member modal ─────────────────────────────────────
+interface CreateProfileModalProps {
+  onClose: () => void;
+  onCreated: (displayName: string) => void;
+}
+
+function CreateProfileModal({ onClose, onCreated }: CreateProfileModalProps) {
+  const [displayName, setDisplayName] = useState("");
+  const [avatarEmoji, setAvatarEmoji] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const titleId = useId();
+  const nameRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(true, onClose, nameRef);
+
+  async function handleCreate() {
+    const name = displayName.trim();
+    if (!name) {
+      setError("Enter a name.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await api.createProfile(name, avatarEmoji.trim() || undefined);
+      onCreated(name);
+      onClose();
+    } catch (e) {
+      setError(friendlyError(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={modalStyles.overlay} onClick={onClose}>
+      <div
+        ref={dialogRef}
+        style={modalStyles.modal}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div>
+          <h2 id={titleId} style={modalStyles.title}>Add a household member</h2>
+          <p style={modalStyles.sub}>They'll start as a Member; change their role afterward if needed.</p>
+        </div>
+
+        <label style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)", fontSize: "var(--text-sm)" }}>
+          <span style={{ color: "var(--color-text)" }}>Name</span>
+          <input
+            ref={nameRef}
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+            placeholder="e.g. Ada"
+            style={{
+              height: 32,
+              border: "1px solid var(--color-border)",
+              borderRadius: "var(--radius-md)",
+              padding: "0 8px",
+              fontSize: "var(--text-sm)",
+              background: "var(--color-bg)",
+              color: "var(--color-text)",
+            }}
+          />
+        </label>
+
+        <label style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)", fontSize: "var(--text-sm)" }}>
+          <span style={{ color: "var(--color-text)" }}>Avatar emoji (optional)</span>
+          <input
+            value={avatarEmoji}
+            onChange={(e) => setAvatarEmoji(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+            placeholder="emoji"
+            maxLength={8}
+            style={{
+              height: 32,
+              width: 64,
+              border: "1px solid var(--color-border)",
+              borderRadius: "var(--radius-md)",
+              padding: "0 8px",
+              fontSize: "var(--text-sm)",
+              background: "var(--color-bg)",
+              color: "var(--color-text)",
+            }}
+          />
+        </label>
+
+        {error && <ErrorBanner error={error} />}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "var(--space-2)" }}>
+          <Button size="sm" variant="secondary" onPress={onClose} isDisabled={saving}>
+            Cancel
+          </Button>
+          <Button size="sm" variant="primary" onPress={handleCreate} isDisabled={saving}>
+            {saving ? "Adding…" : "Add"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main screen ──────────────────────────────────────────────
 export function Household() {
   const [profiles, setProfiles] = useState<HouseholdProfile[]>([]);
@@ -323,6 +429,7 @@ export function Household() {
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const [editing, setEditing] = useState<HouseholdProfile | null>(null);
   const [managingDevices, setManagingDevices] = useState<HouseholdProfile | null>(null);
+  const [creating, setCreating] = useState(false);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showFlash = useCallback((text: string, ok = true) => {
@@ -356,6 +463,11 @@ export function Household() {
     showFlash(`${updated.display_name} is now ${ROLE_LABEL[updated.role]}.`, true);
   }
 
+  function handleCreated(displayName: string) {
+    loadProfiles();
+    showFlash(`${displayName} added to the household.`, true);
+  }
+
   const ownerCount = profiles.filter((p) => p.role === "owner").length;
 
   return (
@@ -363,9 +475,14 @@ export function Household() {
       <PageHeader
         title="Household"
         action={
-          <Button size="sm" variant="secondary" onPress={loadProfiles} isDisabled={loading}>
-            <RefreshCw size={13} />
-          </Button>
+          <div style={{ display: "flex", gap: "var(--space-2)" }}>
+            <Button size="sm" variant="secondary" onPress={loadProfiles} isDisabled={loading}>
+              <RefreshCw size={13} />
+            </Button>
+            <Button size="sm" variant="primary" onPress={() => setCreating(true)}>
+              <Plus size={14} /> Add member
+            </Button>
+          </div>
         }
       />
       <p className="dev-header__sub">
@@ -397,7 +514,9 @@ export function Household() {
       {!loading && !loadError && (
         <Section title="Members">
           {profiles.length === 0 ? (
-            <EmptyState icon={<Users size={20} />}>No profiles yet.</EmptyState>
+            <EmptyState icon={<Users size={20} />}>
+              No profiles yet. Add yourself to get started.
+            </EmptyState>
           ) : (
             profiles.map((p) => {
               const tone = roleTone(p.role);
@@ -445,6 +564,9 @@ export function Household() {
           onClose={() => setManagingDevices(null)}
           onFlash={showFlash}
         />
+      )}
+      {creating && (
+        <CreateProfileModal onClose={() => setCreating(false)} onCreated={handleCreated} />
       )}
     </div>
   );
