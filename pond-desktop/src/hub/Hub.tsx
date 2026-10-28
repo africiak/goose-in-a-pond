@@ -27,7 +27,6 @@ import { ConnectionsDetail } from "./views/settings/Connections";
 import { NotificationsDetail } from "./views/settings/Notifications";
 import { AppearanceView } from "./views/settings/Appearance";
 import { AccountDetail } from "./views/settings/Account";
-import { HouseholdDetail } from "./views/settings/Household";
 import { HubOverlay } from "./overlays/HubOverlay";
 import type { SettingsRowId } from "./data/settingsConfig";
 
@@ -81,7 +80,6 @@ const SETTINGS_VIEWS: Record<SettingsRowId, DetailComponent> = {
   cameras:       CamerasDetail,
   connections:   ConnectionsDetail,
   notifications: NotificationsDetail,
-  household:     HouseholdDetail,
   // AppearanceView doesn't accept a go prop — wrap it so the prop is silently dropped
   appearance:    () => <AppearanceView />,
   account:       AccountDetail,

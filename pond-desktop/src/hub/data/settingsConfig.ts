@@ -14,7 +14,6 @@ export const HX_PATHS = {
   bell:      "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0",
   wifi:      "M12 20h.01M2 8.82a15 15 0 0 1 20 0M5 12.859a10 10 0 0 1 14 0M8.5 16.429a5 5 0 0 1 7 0",
   palette:   "M12 22a10 10 0 1 1 0-20 8 8 0 0 1 0 16h-2a2 2 0 0 0 0 4zM7.5 11a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM12 7.5a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM16.5 11a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
-  users:     "M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22.5 21v-2a4 4 0 0 0-3-3.87M16.5 3.37a4 4 0 0 1 0 7.75",
 } as const;
 
 // ─── HP home icon re-export (used for "rooms" row) ─────────────
@@ -35,7 +34,6 @@ export type SettingsRowId =
   | "rooms"
   | "cameras"
   | "notifications"
-  | "household"
   | "appearance"
   | "account";
 
@@ -199,14 +197,6 @@ export const SETTINGS: SettingsGroup[] = [
         bg: "#FEF3C7",
         label: "Notifications",
         sub: "Alerts & schedule debriefs",
-      },
-      {
-        id: "household",
-        iconPath: HX_PATHS.users,
-        color: "#BE185D",
-        bg: "#FCE7F3",
-        label: "Household",
-        sub: "Who's here, and what they can do",
       },
     ],
   },
