@@ -301,6 +301,15 @@ pub fn api_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/models/{category}/{name}", delete(delete_model))
         .route("/profiles", get(list_profiles))
         .route("/profiles/{id}", get(get_profile).delete(delete_profile))
+        .route("/profiles/{id}/role", put(set_profile_role))
+        .route(
+            "/profiles/{id}/devices",
+            get(list_guest_device_access),
+        )
+        .route(
+            "/profiles/{id}/devices/{device_id}",
+            put(allow_guest_device).delete(revoke_guest_device),
+        )
         .route("/sensors", post(record_sensor))
         .route("/sensors/{device_id}", get(get_recent_sensors))
         // The unified event log; DELETE clears it ("clear my activity").
@@ -8382,6 +8391,19 @@ async fn link_or_copy_blob(src: &std::path::Path, dest: &std::path::Path) -> any
 
 // ── Profile handlers ──────────────────────────────────────────────────────────
 
+fn profile_json(p: &pond_core::user_data::domain::profile::Profile) -> Value {
+    json!({
+        "id":           p.id,
+        "display_name": p.display_name,
+        "avatar_emoji": p.avatar_emoji,
+        "preferences":  p.preferences,
+        "role":         p.role,
+        "guest_until":  p.guest_until.map(|t| t.to_rfc3339()),
+        "created_at":   p.created_at.to_rfc3339(),
+        "updated_at":   p.updated_at.to_rfc3339(),
+    })
+}
+
 async fn list_profiles(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -8391,19 +8413,7 @@ async fn list_profiles(
             Json(json!({"error": e.to_string()})),
         )
     })?;
-    let list: Vec<Value> = profiles
-        .iter()
-        .map(|p| {
-            json!({
-                "id":           p.id,
-                "display_name": p.display_name,
-                "avatar_emoji": p.avatar_emoji,
-                "preferences":  p.preferences,
-                "created_at":   p.created_at.to_rfc3339(),
-                "updated_at":   p.updated_at.to_rfc3339(),
-            })
-        })
-        .collect();
+    let list: Vec<Value> = profiles.iter().map(profile_json).collect();
     Ok(Json(json!({ "profiles": list })))
 }
 
@@ -8423,17 +8433,7 @@ async fn create_profile(
             Json(json!({"error": e.to_string()})),
         )
     })?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "id":           profile.id,
-            "display_name": profile.display_name,
-            "avatar_emoji": profile.avatar_emoji,
-            "preferences":  profile.preferences,
-            "created_at":   profile.created_at.to_rfc3339(),
-            "updated_at":   profile.updated_at.to_rfc3339(),
-        })),
-    ))
+    Ok((StatusCode::CREATED, Json(profile_json(&profile))))
 }
 
 async fn get_profile(
@@ -8447,14 +8447,7 @@ async fn get_profile(
         )
     })?;
     match profile {
-        Some(p) => Ok(Json(json!({
-            "id":           p.id,
-            "display_name": p.display_name,
-            "avatar_emoji": p.avatar_emoji,
-            "preferences":  p.preferences,
-            "created_at":   p.created_at.to_rfc3339(),
-            "updated_at":   p.updated_at.to_rfc3339(),
-        }))),
+        Some(p) => Ok(Json(profile_json(&p))),
         None => Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": "profile not found"})),
@@ -8618,6 +8611,235 @@ async fn delete_profile(
         },
         "cleared_primary_profile": cleared_primary,
     })))
+}
+
+// ── Household role & guest device access handlers ─────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct SetProfileRoleBody {
+    role: pond_core::user_data::domain::profile::Role,
+    #[serde(default)]
+    guest_until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `PUT /api/v1/profiles/{id}/role` — owner-only; refused if it would leave the household
+/// without an owner.
+async fn set_profile_role(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    principal: Option<axum::Extension<pond_core::security::ports::policy::Principal>>,
+    body: Result<Json<SetProfileRoleBody>, JsonRejection>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    use pond_core::user_data::domain::profile::Role;
+    use pond_core::user_data::services::household_permission::{
+        may_manage_household_roles, PermissionDecision,
+    };
+
+    let caller_role = resolve_role_from_principal(&state, principal.as_ref()).await;
+    if let PermissionDecision::Denied {
+        reason,
+        grantable_by,
+    } = may_manage_household_roles(caller_role)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
+        ));
+    }
+
+    let Json(req) = body.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("Invalid request: {}", e)})),
+        )
+    })?;
+
+    let target = state
+        .profile_repo
+        .get(&id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "profile not found"})),
+            )
+        })?;
+
+    if target.role == Role::Owner && req.role != Role::Owner {
+        let profiles = state.profile_repo.list().await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?;
+        let owners = profiles.iter().filter(|p| p.role == Role::Owner).count();
+        if owners <= 1 {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({"error": "this household would be left with no owner"})),
+            ));
+        }
+    }
+
+    let updated = state
+        .profile_repo
+        .set_role(&id, req.role, req.guest_until)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?;
+    Ok(Json(profile_json(&updated)))
+}
+
+/// Owner-only gate shared by the three guest-device-access handlers below.
+async fn require_household_role_manager(
+    state: &Arc<AppState>,
+    principal: Option<&axum::Extension<pond_core::security::ports::policy::Principal>>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    use pond_core::user_data::services::household_permission::{
+        may_manage_household_roles, PermissionDecision,
+    };
+    let role = resolve_role_from_principal(state, principal).await;
+    if let PermissionDecision::Denied {
+        reason,
+        grantable_by,
+    } = may_manage_household_roles(role)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
+        ));
+    }
+    Ok(())
+}
+
+async fn require_profile_exists(
+    state: &Arc<AppState>,
+    id: &str,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    state
+        .profile_repo
+        .get(id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "profile not found"})),
+            )
+        })?;
+    Ok(())
+}
+
+/// `GET /api/v1/profiles/{id}/devices` — the devices this guest profile may currently control.
+async fn list_guest_device_access(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    principal: Option<axum::Extension<pond_core::security::ports::policy::Principal>>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_household_role_manager(&state, principal.as_ref()).await?;
+    require_profile_exists(&state, &id).await?;
+    let device_ids = state
+        .guest_device_access
+        .allowed_devices(&id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?;
+    Ok(Json(json!({ "device_ids": device_ids })))
+}
+
+async fn require_device_exists(
+    state: &Arc<AppState>,
+    device_id: &str,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    state
+        .device_registry
+        .get_device(device_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "device not found"})),
+            )
+        })?;
+    Ok(())
+}
+
+/// `PUT /api/v1/profiles/{id}/devices/{device_id}` — grant a guest profile access to a device.
+async fn allow_guest_device(
+    State(state): State<Arc<AppState>>,
+    Path((id, device_id)): Path<(String, String)>,
+    principal: Option<axum::Extension<pond_core::security::ports::policy::Principal>>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_household_role_manager(&state, principal.as_ref()).await?;
+    require_profile_exists(&state, &id).await?;
+    require_device_exists(&state, &device_id).await?;
+    state
+        .guest_device_access
+        .allow(&id, &device_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?;
+    let device_ids = state
+        .guest_device_access
+        .allowed_devices(&id)
+        .await
+        .unwrap_or_default();
+    Ok(Json(json!({ "device_ids": device_ids })))
+}
+
+/// `DELETE /api/v1/profiles/{id}/devices/{device_id}` — revoke a guest profile's access.
+async fn revoke_guest_device(
+    State(state): State<Arc<AppState>>,
+    Path((id, device_id)): Path<(String, String)>,
+    principal: Option<axum::Extension<pond_core::security::ports::policy::Principal>>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_household_role_manager(&state, principal.as_ref()).await?;
+    require_profile_exists(&state, &id).await?;
+    state
+        .guest_device_access
+        .revoke(&id, &device_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?;
+    let device_ids = state
+        .guest_device_access
+        .allowed_devices(&id)
+        .await
+        .unwrap_or_default();
+    Ok(Json(json!({ "device_ids": device_ids })))
 }
 
 // ── Sensor handlers ───────────────────────────────────────────────────────────

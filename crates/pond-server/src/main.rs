@@ -4364,6 +4364,7 @@ async fn run_server(
         device_registry,
         room_registry,
         guest_room_access,
+        guest_device_access,
         memory_repo,
         embedding_provider,
         // Same handle the repos write through and the sweep repairs; never construct a second one.

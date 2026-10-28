@@ -129,6 +129,7 @@ async fn router_over(
         device_registry: Arc::new(NoDevices),
         room_registry: Arc::new(pond_core::user_data::mocks::mock_room_registry::MockRoomRegistry),
         guest_room_access: Arc::new(pond_core::user_data::mocks::mock_guest_room_access::MockGuestRoomAccess),
+        guest_device_access: Arc::new(pond_core::user_data::mocks::mock_guest_device_access::MockGuestDeviceAccess),
         matter: None,
         memory_repo,
         embedding_provider,

@@ -73,6 +73,7 @@ async fn make_app() -> Harness {
         device_registry: registry.clone(),
         room_registry,
         guest_room_access: Arc::new(pond_core::user_data::mocks::mock_guest_room_access::MockGuestRoomAccess),
+        guest_device_access: Arc::new(pond_core::user_data::mocks::mock_guest_device_access::MockGuestDeviceAccess),
         matter: None,
         memory_repo: Arc::new(MockMemoryRepository::new()),
         embedding_provider: None,

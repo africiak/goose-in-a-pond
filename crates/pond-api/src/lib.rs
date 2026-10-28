@@ -130,6 +130,9 @@ pub struct AppState {
     pub room_registry: Arc<dyn RoomRegistry + Send + Sync>,
     /// Rooms guests (an unidentified speaker) may use devices in; household-wide, not per-guest.
     pub guest_room_access: Arc<dyn pond_core::user_data::ports::guest_room_access::GuestRoomAccess + Send + Sync>,
+    /// Devices an invited, identified guest profile (`Role::Guest`) may use; per-guest, unlike
+    /// [`Self::guest_room_access`].
+    pub guest_device_access: Arc<dyn pond_core::user_data::ports::guest_device_access::GuestDeviceAccess + Send + Sync>,
     /// Matter runtime, reconciled from `matter_enabled`; `None` only where no Matter is wired.
     /// Off is a runtime state, so an unreachable controller never reads as "not enabled".
     pub matter: Option<Arc<dyn pond_core::user_data::ports::matter_runtime::MatterRuntimePort>>,

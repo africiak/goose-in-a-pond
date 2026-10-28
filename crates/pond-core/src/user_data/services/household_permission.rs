@@ -27,6 +27,8 @@ pub const REASON_OWNER_ONLY_MODEL: &str = "only the owner may change the model";
 pub const REASON_OWNER_ONLY_REMOTE_ACCESS: &str =
     "only the owner may enroll this Pond in remote access";
 pub const REASON_OWNER_ONLY_RESET: &str = "only the owner may reset this Pond";
+pub const REASON_OWNER_ONLY_ROLES: &str =
+    "only the owner may change a household member's role or device access";
 pub const REASON_GUEST_DEVICE_NOT_ALLOWED: &str =
     "this guest has not been given access to this device";
 pub const REASON_GUEST_ACCESS_EXPIRED: &str = "this guest's access to this device has expired";
@@ -56,6 +58,12 @@ pub fn may_enroll_remote_access(role: Option<Role>) -> PermissionDecision {
 
 pub fn may_reset_pond(role: Option<Role>) -> PermissionDecision {
     owner_only(role, REASON_OWNER_ONLY_RESET)
+}
+
+/// Granting a role or a guest's device access is itself a grant of trust — only the owner may
+/// make it, same as the other owner-only actions above.
+pub fn may_manage_household_roles(role: Option<Role>) -> PermissionDecision {
+    owner_only(role, REASON_OWNER_ONLY_ROLES)
 }
 
 /// Owner, Member and Developer are fully trusted for device control. A Guest is restricted to
@@ -136,6 +144,14 @@ mod tests {
     fn only_the_owner_may_reset_the_pond() {
         allowed(may_reset_pond(Some(Role::Owner)));
         denied_with(may_reset_pond(None), REASON_OWNER_ONLY_RESET);
+    }
+
+    #[test]
+    fn only_the_owner_may_manage_household_roles() {
+        allowed(may_manage_household_roles(Some(Role::Owner)));
+        for role in [Some(Role::Member), Some(Role::Guest), Some(Role::Developer), None] {
+            denied_with(may_manage_household_roles(role), REASON_OWNER_ONLY_ROLES);
+        }
     }
 
     #[test]
