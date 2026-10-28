@@ -5,10 +5,13 @@ use async_trait::async_trait;
 use pond_adapters_weather::WeatherProvider;
 use pond_core::mcp::ports::tools::tool_dispatcher::{ToolCallResult, ToolDispatcher};
 use pond_core::models::ports::embedding::EmbeddingProvider;
+use pond_core::user_data::domain::profile::{ProfileScope, Role};
 use pond_core::user_data::ports::device_control::DeviceControlPort;
 use pond_core::user_data::ports::device_registry::DeviceRegistry;
+use pond_core::user_data::ports::guest_device_access::GuestDeviceAccess;
 use pond_core::user_data::ports::guest_room_access::GuestRoomAccess;
 use pond_core::user_data::ports::memory_repository::MemoryRepository;
+use pond_core::user_data::ports::profile::ProfileRepository;
 use pond_core::user_data::ports::room_registry::RoomRegistry;
 use pond_core::user_data::ports::scheduler::SchedulerPort;
 use pond_core::user_data::ports::settings::SettingsRepository;
@@ -101,6 +104,8 @@ pub struct McpToolDispatcher {
     peer: Peer<RoleServer>,
     /// Keeps the peer-providing service alive.
     _peer_service: RunningService<RoleServer, SystemMcpServer>,
+    /// Resolves a scope's role once per call, so tool handlers don't each need their own lookup.
+    profile_repo: Arc<dyn ProfileRepository>,
 }
 
 impl McpToolDispatcher {
@@ -117,6 +122,8 @@ impl McpToolDispatcher {
         embedding_provider: Option<Arc<dyn EmbeddingProvider + Send + Sync>>,
         device_control: Arc<dyn DeviceControlPort>,
         guest_room_access: Arc<dyn GuestRoomAccess>,
+        guest_device_access: Arc<dyn GuestDeviceAccess>,
+        profile_repo: Arc<dyn ProfileRepository>,
     ) -> Self {
         let http_client = crate::build_http_client();
 
@@ -132,8 +139,13 @@ impl McpToolDispatcher {
             settings_repo.clone(),
             skill_repo,
         );
-        let device_control_server =
-            DeviceControlMcpServer::new(device_control, device_registry, guest_room_access);
+        let device_control_server = DeviceControlMcpServer::new(
+            device_control,
+            device_registry,
+            guest_room_access,
+            guest_device_access,
+            profile_repo.clone(),
+        );
         // rmcp mints a `Peer` only from a running service; the dep-free system server backs it.
         let (_client_stream, server_stream) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly(SystemMcpServer::new(), server_stream, None);
@@ -177,6 +189,18 @@ impl McpToolDispatcher {
             servers,
             peer,
             _peer_service: running,
+            profile_repo,
+        }
+    }
+
+    /// Maps an already-resolved scope to a role, the same mapping `pond-api`'s
+    /// `resolve_role` uses: `Guest` (an unidentified voice) has no profile, hence no role;
+    /// `Household` (a sole-member pond) is trusted as the owner.
+    async fn resolve_role(&self, scope: &ProfileScope) -> Option<Role> {
+        match scope {
+            ProfileScope::Owner(id) => self.profile_repo.get(id).await.ok().flatten().map(|p| p.role),
+            ProfileScope::Household => Some(Role::Owner),
+            ProfileScope::Guest => None,
         }
     }
 
@@ -224,6 +248,9 @@ impl ToolDispatcher for McpToolDispatcher {
         // Carried via the type-keyed extensions bag so a server's `#[tool]` methods can read the
         // caller's scope without widening rmcp's own `RequestContext` or every tool's signature.
         ctx.extensions.insert(scope.clone());
+        if let Some(role) = self.resolve_role(scope).await {
+            ctx.extensions.insert(role);
+        }
         match server.server.call_tool_bridged(params, ctx).await {
             Ok(rmcp_result) => Ok(convert_rmcp_result(rmcp_result)),
             Err(e) => Ok(ToolCallResult {

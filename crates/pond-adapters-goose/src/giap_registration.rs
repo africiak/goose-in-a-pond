@@ -8,8 +8,10 @@ use pond_core::models::ports::embedding::EmbeddingProvider;
 use pond_core::user_data::domain::settings::Settings;
 use pond_core::user_data::ports::device_control::DeviceControlPort;
 use pond_core::user_data::ports::device_registry::DeviceRegistry;
+use pond_core::user_data::ports::guest_device_access::GuestDeviceAccess;
 use pond_core::user_data::ports::guest_room_access::GuestRoomAccess;
 use pond_core::user_data::ports::memory_repository::MemoryRepository;
+use pond_core::user_data::ports::profile::ProfileRepository;
 use pond_core::user_data::ports::room_registry::RoomRegistry;
 use pond_core::user_data::ports::scheduler::SchedulerPort;
 use pond_core::user_data::ports::settings::SettingsRepository;
@@ -39,6 +41,8 @@ pub fn register_giap_extensions(
     device_registry: Arc<dyn DeviceRegistry + Send + Sync>,
     room_registry: Arc<dyn RoomRegistry + Send + Sync>,
     guest_room_access: Arc<dyn GuestRoomAccess + Send + Sync>,
+    guest_device_access: Arc<dyn GuestDeviceAccess + Send + Sync>,
+    profile_repo: Arc<dyn ProfileRepository + Send + Sync>,
     skill_repo: Arc<dyn UserSkillRepository + Send + Sync>,
     device_control: Arc<dyn DeviceControlPort + Send + Sync>,
     tool_caller: Option<Arc<dyn ToolCaller>>,
@@ -117,6 +121,8 @@ pub fn register_giap_extensions(
             device_control,
             device_registry,
             guest_room_access,
+            guest_device_access,
+            profile_repo,
         );
         register_builtin_extension(
             "giap-device-control",

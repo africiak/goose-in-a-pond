@@ -34,7 +34,7 @@ use pond_core::security::ports::handshake::{
 use pond_core::shared::ports::event_bus::BusEvent;
 use pond_core::shared::services::chat::ChatService;
 use pond_core::user_data::domain::onboarding::OnboardingStep;
-use pond_core::user_data::domain::profile::CreateProfileRequest;
+use pond_core::user_data::domain::profile::{CreateProfileRequest, Role};
 use pond_core::user_data::domain::schedule::{
     OneShotTimePassed, Schedule, SensorTriggerSpec, TaskKind,
 };
@@ -1665,6 +1665,34 @@ async fn reset_onboarding(
             "onboarding_reset",
         )
         .await?;
+    }
+    // The host credential is already a stronger proof than any household role, so it stays
+    // sufficient on its own; otherwise (a bearer-token caller) the reset itself is owner-only —
+    // but only once onboarding has actually finished. Mid-wizard, profiles may already exist
+    // (added as setup steps run) with no owner settled yet (that's fixed by completion, which
+    // is also when the migration's backfill source, `primary_profile_id`, gets set); requiring
+    // an owner before then would lock the claimant out of its own in-progress setup.
+    let onboarded = state.skip_onboarding
+        || state.onboarding_repo.is_complete().await.unwrap_or(true);
+    let host_presented = crate::host_guard::presents_credential(
+        credential.as_ref().map(|axum::Extension(c)| c),
+        &headers,
+    );
+    if onboarded && !host_presented {
+        use pond_core::user_data::services::household_permission::{
+            may_reset_pond, PermissionDecision,
+        };
+        let role = resolve_role_from_principal(&state, principal.as_ref()).await;
+        if let PermissionDecision::Denied {
+            reason,
+            grantable_by,
+        } = may_reset_pond(role)
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
+            ));
+        }
     }
     let service = OnboardingService::new(state.onboarding_repo.clone());
 
@@ -4779,6 +4807,19 @@ async fn unregister_device(
     use pond_core::user_data::ports::device_commissioning::{
         matter_bridged_endpoint, matter_node_id,
     };
+    use pond_core::user_data::services::household_permission::{may_remove_device, PermissionDecision};
+
+    let role = resolve_role_from_principal(&state, principal.as_ref()).await;
+    if let PermissionDecision::Denied {
+        reason,
+        grantable_by,
+    } = may_remove_device(role)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
+        ));
+    }
 
     // Refuse bridged endpoints: Matter decommissions whole nodes (hub + siblings), and dropping
     // just the row lets the controller re-announce it; the hub's own app owns its children.
@@ -5825,6 +5866,7 @@ fn geocode_target(
 
 async fn update_settings(
     State(state): State<Arc<AppState>>,
+    principal: Option<axum::Extension<pond_core::security::ports::policy::Principal>>,
     body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Json(mut patch) = body.map_err(|e| {
@@ -5833,6 +5875,25 @@ async fn update_settings(
             Json(json!({"error": format!("Invalid settings body: {}", e)})),
         )
     })?;
+
+    // Only the model fields are owner-gated; the rest of this patch may touch unrelated settings
+    // (voice, appearance, retention, ...) that any household member may already freely change.
+    if patch.get("chat_model").is_some() || patch.get("chat_provider").is_some() {
+        use pond_core::user_data::services::household_permission::{
+            may_change_model, PermissionDecision,
+        };
+        let role = resolve_role_from_principal(&state, principal.as_ref()).await;
+        if let PermissionDecision::Denied {
+            reason,
+            grantable_by,
+        } = may_change_model(role)
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
+            ));
+        }
+    }
 
     let current = state.settings_repo.get().await.map_err(|e| {
         (
@@ -5956,6 +6017,22 @@ async fn update_settings(
     // Must follow the write (marks existing rows); exempts these keys from DEFAULT_ADOPTIONS.
     if let Err(e) = state.settings_repo.mark_user_set(&user_keys).await {
         tracing::warn!(error = %e, "failed to record user intent for settings patch");
+    }
+
+    // The only place a profile becomes Owner going forward (the migration backfill only covers
+    // profiles that existed when it ran): naming the primary profile is naming the owner.
+    if user_keys.contains("primary_profile_id") {
+        if let Some(primary) = merged.primary_profile_id.as_deref().filter(|id| !id.is_empty()) {
+            match state.profile_repo.get(primary).await {
+                Ok(Some(profile)) if profile.role != Role::Owner => {
+                    if let Err(e) = state.profile_repo.set_role(primary, Role::Owner, None).await {
+                        tracing::warn!(error = %e, profile_id = %primary, "failed to promote the primary profile to owner");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, profile_id = %primary, "could not read the primary profile to promote it"),
+            }
+        }
     }
 
     // Privacy controls must apply now, not at the next restart.
@@ -7317,9 +7394,25 @@ fn refuse_unavailable_category(
 /// POST /api/v1/models/{category}/{name}/activate — assign to a role; mirrored into settings.
 async fn activate_model(
     State(state): State<Arc<AppState>>,
+    principal: Option<axum::Extension<pond_core::security::ports::policy::Principal>>,
     Path((category, name)): Path<(String, String)>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    use pond_core::user_data::services::household_permission::{
+        may_change_model, PermissionDecision,
+    };
+    let caller_role = resolve_role_from_principal(&state, principal.as_ref()).await;
+    if let PermissionDecision::Denied {
+        reason,
+        grantable_by,
+    } = may_change_model(caller_role)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
+        ));
+    }
+
     let Some(model_repo) = state.model_repo.clone() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -18439,6 +18532,41 @@ fn proven_device(
         Some(axum::Extension(principal)) => ProvenDevice::from_principal(principal),
         None => ProvenDevice::none(),
     }
+}
+
+/// Maps an already-resolved scope to a role. `Guest` (an unidentified voice) has no profile,
+/// hence no role; `Household` (a sole-member pond) is trusted as the owner, the same "no one
+/// else to defer to" trust `ProfileScope::Household` already carries elsewhere.
+async fn resolve_role(state: &Arc<AppState>, scope: &ProfileScope) -> Option<Role> {
+    match scope {
+        ProfileScope::Owner(id) => state.profile_repo.get(id).await.ok().flatten().map(|p| p.role),
+        ProfileScope::Household => Some(Role::Owner),
+        ProfileScope::Guest => None,
+    }
+}
+
+/// For a handler with no chat session (device removal, settings, model activation, remote-access
+/// enrollment): resolves this caller's role from its paired device, the same trust boundary
+/// `resolve_turn_scope` uses for a turn, just without a session identity to read or persist into.
+async fn resolve_role_from_principal(
+    state: &Arc<AppState>,
+    principal: Option<&axum::Extension<pond_core::security::ports::policy::Principal>>,
+) -> Option<Role> {
+    let device = proven_device(principal);
+    let device_rung = match device.id() {
+        None => DeviceRung::NoDevice,
+        Some(device_id) => device.rung(device_attribution(state).device_profile(device_id).await),
+    };
+    let household_has_multiple_members = match state.profile_repo.list().await {
+        Ok(profiles) => profiles.len() > 1,
+        Err(_) => true,
+    };
+    let resolved = identity_resolution::resolve(&identity_resolution::ResolutionInputs {
+        paired_device_profile: device_rung.profile_id(),
+        session: &SessionIdentity::unknown(),
+        household_has_multiple_members,
+    });
+    resolve_role(state, &resolved.scope).await
 }
 
 // ── Connecting a source ────────────────────────────────────────────────────
