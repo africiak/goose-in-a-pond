@@ -32,20 +32,25 @@ impl Default for MockProfileRepository {
 impl ProfileRepository for MockProfileRepository {
     async fn create(&self, request: CreateProfileRequest) -> Result<Profile> {
         let now = Utc::now();
+        let mut store = self.store.write().await;
+        // Mirrors `SqliteProfileRepository::create`: the first profile in an otherwise-empty
+        // household is unambiguously its owner.
+        let role = if store.is_empty() {
+            Role::Owner
+        } else {
+            Role::Member
+        };
         let profile = Profile {
             id: Uuid::new_v4().to_string(),
             display_name: request.display_name,
             avatar_emoji: request.avatar_emoji,
             preferences: HashMap::new(),
-            role: Role::Member,
+            role,
             guest_until: None,
             created_at: now,
             updated_at: now,
         };
-        self.store
-            .write()
-            .await
-            .insert(profile.id.clone(), profile.clone());
+        store.insert(profile.id.clone(), profile.clone());
         Ok(profile)
     }
 

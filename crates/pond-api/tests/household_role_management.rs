@@ -264,7 +264,7 @@ async fn household_roles_and_guest_device_access_over_http() {
     let body = show("1. GET /profiles (empty)", &router, get("/api/v1/profiles")).await;
     assert_eq!(body["profiles"].as_array().unwrap().len(), 0);
 
-    // 2. Create the first profile. One-member household: the caller is trusted as Owner.
+    // 2. Create the first profile. The first profile in an empty household is its owner.
     let body = show(
         "2. POST /profiles -> Ada",
         &router,
@@ -275,19 +275,10 @@ async fn household_roles_and_guest_device_access_over_http() {
     )
     .await;
     let owner_id = body["id"].as_str().unwrap().to_string();
-    assert_eq!(body["role"], "member", "a freshly created profile defaults to Member");
-
-    // 3. Set Ada's role to Owner -- allowed while she's the household's only member.
-    let body = show(
-        "3. PUT /profiles/{Ada}/role {role: owner}",
-        &router,
-        put(
-            &format!("/api/v1/profiles/{owner_id}/role"),
-            serde_json::json!({"role": "owner"}),
-        ),
-    )
-    .await;
-    assert_eq!(body["role"], "owner");
+    assert_eq!(
+        body["role"], "owner",
+        "the first profile in an empty household is its owner"
+    );
 
     // 3a. Guest-device-access routes, exercised while Ada is still legitimately Owner.
     let body = show(

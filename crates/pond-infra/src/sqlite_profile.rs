@@ -68,24 +68,40 @@ impl ProfileRepository for SqliteProfileRepository {
         let now = Utc::now();
         let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
+        // The first profile in an otherwise-empty household is unambiguously its owner — the
+        // same "no one else to defer to" trust `ProfileScope::Household` already carries
+        // elsewhere. Checked inside the insert's own transaction so a concurrent create can't
+        // both see zero and both become owner.
+        let mut tx = self.pool.begin().await?;
+        let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM profiles")
+            .fetch_one(&mut *tx)
+            .await?;
+        let role = if existing == 0 {
+            Role::Owner
+        } else {
+            Role::Member
+        };
+
         sqlx::query(
             "INSERT INTO profiles (id, display_name, avatar_emoji, preferences, role, created_at, updated_at) \
-             VALUES (?, ?, ?, '{}', 'member', ?, ?)",
+             VALUES (?, ?, ?, '{}', ?, ?, ?)",
         )
         .bind(&id)
         .bind(&request.display_name)
         .bind(&request.avatar_emoji)
+        .bind(role.as_str())
         .bind(&now_str)
         .bind(&now_str)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         Ok(Profile {
             id,
             display_name: request.display_name,
             avatar_emoji: request.avatar_emoji,
             preferences: HashMap::new(),
-            role: Role::Member,
+            role,
             guest_until: None,
             created_at: now,
             updated_at: now,
@@ -255,11 +271,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_new_profile_defaults_to_member() {
+    async fn the_first_profile_in_an_empty_household_is_its_owner() {
         let (repo, _tmp) = make_repo().await;
         let profile = repo
             .create(CreateProfileRequest {
                 display_name: "Jerry".to_string(),
+                avatar_emoji: "X".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(profile.role, Role::Owner);
+        assert_eq!(profile.guest_until, None);
+    }
+
+    #[tokio::test]
+    async fn a_new_profile_defaults_to_member_once_an_owner_exists() {
+        let (repo, _tmp) = make_repo().await;
+        repo.create(CreateProfileRequest {
+            display_name: "Jerry".to_string(),
+            avatar_emoji: "X".to_string(),
+        })
+        .await
+        .unwrap();
+        let profile = repo
+            .create(CreateProfileRequest {
+                display_name: "Liz".to_string(),
                 avatar_emoji: "X".to_string(),
             })
             .await
