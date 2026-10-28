@@ -512,47 +512,73 @@ export function Household() {
       {loading && <SkeletonList rows={3} />}
 
       {!loading && !loadError && (
-        <Section title="Members">
-          {profiles.length === 0 ? (
+        profiles.length === 0 ? (
+          <Section title="Members">
             <EmptyState icon={<Users size={20} />}>
               No profiles yet. Add yourself to get started.
             </EmptyState>
-          ) : (
-            profiles.map((p) => {
+          </Section>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+              gap: "var(--space-3)",
+            }}
+          >
+            {profiles.map((p) => {
               const tone = roleTone(p.role);
               return (
-                <Row
+                <div
                   key={p.id}
-                  label={`${p.avatar_emoji} ${p.display_name}`}
-                  hint={p.role === "guest" ? `Guest · ${guestUntilLabel(p.guest_until)}` : undefined}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    textAlign: "center",
+                    gap: "var(--space-2)",
+                    padding: "var(--space-4) var(--space-3)",
+                    background: "var(--color-bg)",
+                    border: "1px solid var(--color-border)",
+                    borderRadius: "var(--radius-card, 14px)",
+                  }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: tone.fg,
-                        background: tone.bg,
-                        padding: "2px 8px",
-                        borderRadius: 999,
-                      }}
-                    >
-                      {ROLE_LABEL[p.role]}
+                  <span style={{ fontSize: 36, lineHeight: 1 }}>{p.avatar_emoji}</span>
+                  <span style={{ fontWeight: 600, fontSize: "var(--text-sm)", color: "var(--color-text)" }}>
+                    {p.display_name}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: tone.fg,
+                      background: tone.bg,
+                      padding: "2px 10px",
+                      borderRadius: 999,
+                    }}
+                  >
+                    {ROLE_LABEL[p.role]}
+                  </span>
+                  {p.role === "guest" && (
+                    <span style={{ fontSize: "var(--text-sm)", color: "var(--color-text-secondary)" }}>
+                      {guestUntilLabel(p.guest_until)}
                     </span>
+                  )}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)", width: "100%" }}>
+                    <Button size="sm" variant="secondary" onPress={() => setEditing(p)}>
+                      Edit role
+                    </Button>
                     {p.role === "guest" && (
                       <Button size="sm" variant="secondary" onPress={() => setManagingDevices(p)}>
                         Devices
                       </Button>
                     )}
-                    <Button size="sm" variant="secondary" onPress={() => setEditing(p)}>
-                      Edit role
-                    </Button>
                   </div>
-                </Row>
+                </div>
               );
-            })
-          )}
-        </Section>
+            })}
+          </div>
+        )
       )}
 
       {editing && (
