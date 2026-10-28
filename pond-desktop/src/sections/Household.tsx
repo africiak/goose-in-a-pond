@@ -564,7 +564,15 @@ export function Household() {
                       {guestUntilLabel(p.guest_until)}
                     </span>
                   )}
-                  <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)", width: "100%" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: "var(--space-1)",
+                      width: "100%",
+                    }}
+                  >
                     <Button size="sm" variant="secondary" onPress={() => setEditing(p)}>
                       Edit role
                     </Button>
