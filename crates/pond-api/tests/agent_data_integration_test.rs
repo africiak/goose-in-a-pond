@@ -1670,6 +1670,9 @@ async fn an_empty_profile_id_is_rejected() {
 async fn deleting_a_member_reports_what_went_and_what_stayed() {
     let (app, storage, _tmp) = make_app_with_sessions().await;
     storage.create_session("sess-1".to_string()).await.unwrap();
+    // The first profile in an empty household becomes its owner, and the last owner can't be
+    // deleted -- seed one ahead of Jerry so deleting him isn't refused on that ground.
+    seed_profile(&app, "Liz").await;
     let jerry = seed_profile(&app, "Jerry").await;
     storage
         .set_session_identity(
@@ -1717,6 +1720,9 @@ async fn deleting_a_member_who_does_not_exist_is_404() {
 #[tokio::test]
 async fn deleting_the_primary_member_clears_the_setting_that_named_them() {
     let (app, _storage, _tmp) = make_app_with_sessions().await;
+    // The first profile in an empty household becomes its owner, and the last owner can't be
+    // deleted -- seed one ahead of Jerry so deleting him isn't refused on that ground.
+    seed_profile(&app, "Liz").await;
     let jerry = seed_profile(&app, "Jerry").await;
 
     let resp = app

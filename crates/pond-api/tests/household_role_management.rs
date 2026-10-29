@@ -337,6 +337,22 @@ async fn household_roles_and_guest_device_access_over_http() {
     );
     assert_eq!(status, StatusCode::CONFLICT);
 
+    // 4b. Try to delete Ada outright -- same guard applies to removal, not just demotion.
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/api/v1/profiles/{owner_id}"))
+        .header("Authorization", "Bearer test-token")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    println!(
+        "--- 4b. DELETE /profiles/{{Ada}} (expect 409, last owner) ---\nHTTP {status}\n{}\n",
+        serde_json::to_string_pretty(&body).unwrap()
+    );
+    assert_eq!(status, StatusCode::CONFLICT);
+
     // 5. Create a second profile: now the household has 2 members.
     let body = show(
         "5. POST /profiles -> Visiting Friend",
@@ -360,11 +376,18 @@ async fn household_roles_and_guest_device_access_over_http() {
         ))
         .await
         .unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
     println!(
-        "--- 6. PUT /profiles/{{Guest}}/role as an unidentified caller in a 2-member household (expect 403) ---\nHTTP {}\n",
-        resp.status()
+        "--- 6. PUT /profiles/{{Guest}}/role as an unidentified caller in a 2-member household (expect 403) ---\nHTTP {status}\n{}\n",
+        serde_json::to_string_pretty(&body).unwrap()
     );
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body["owners"].as_array().unwrap(),
+        &vec![serde_json::json!("Ada")],
+        "a refusal names the actual owner(s), not just the role"
+    );
 
     println!(
         "Household now has {{Ada: owner}} and {{Visiting Friend: member (default)}}. \

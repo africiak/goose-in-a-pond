@@ -1697,10 +1697,7 @@ async fn reset_onboarding(
             grantable_by,
         } = may_reset_pond(role)
         {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
-            ));
+            return Err(permission_denied(&state, reason, grantable_by).await);
         }
     }
     let service = OnboardingService::new(state.onboarding_repo.clone());
@@ -4824,10 +4821,7 @@ async fn unregister_device(
         grantable_by,
     } = may_remove_device(role)
     {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
-        ));
+        return Err(permission_denied(&state, reason, grantable_by).await);
     }
 
     // Refuse bridged endpoints: Matter decommissions whole nodes (hub + siblings), and dropping
@@ -5897,10 +5891,7 @@ async fn update_settings(
             grantable_by,
         } = may_change_model(role)
         {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
-            ));
+            return Err(permission_denied(&state, reason, grantable_by).await);
         }
     }
 
@@ -7416,10 +7407,7 @@ async fn activate_model(
         grantable_by,
     } = may_change_model(caller_role)
     {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
-        ));
+        return Err(permission_denied(&state, reason, grantable_by).await);
     }
 
     let Some(model_repo) = state.model_repo.clone() else {
@@ -8512,6 +8500,27 @@ async fn delete_profile(
             )
         })?;
 
+    // The last-owner guard also applies to deletion, not just demotion: either one would leave
+    // the household with no owner.
+    if profile.role == pond_core::user_data::domain::profile::Role::Owner {
+        let profiles = state.profile_repo.list().await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?;
+        let owners = profiles
+            .iter()
+            .filter(|p| p.role == pond_core::user_data::domain::profile::Role::Owner)
+            .count();
+        if owners <= 1 {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({"error": "this household would be left with no owner"})),
+            ));
+        }
+    }
+
     // Count before deleting: most `profile_id` foreign keys cascade.
     let memories = state
         .memory_repo
@@ -8641,10 +8650,7 @@ async fn set_profile_role(
         grantable_by,
     } = may_manage_household_roles(caller_role)
     {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
-        ));
+        return Err(permission_denied(&state, reason, grantable_by).await);
     }
 
     let Json(req) = body.map_err(|e| {
@@ -8714,10 +8720,7 @@ async fn require_household_role_manager(
         grantable_by,
     } = may_manage_household_roles(role)
     {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": reason, "who_can_grant": grantable_by.as_str()})),
-        ));
+        return Err(permission_denied(state, reason, grantable_by).await);
     }
     Ok(())
 }
@@ -18789,6 +18792,41 @@ async fn resolve_role_from_principal(
         household_has_multiple_members,
     });
     resolve_role(state, &resolved.scope).await
+}
+
+/// Real owner names, for refusals that should say who to ask, not just which role.
+async fn owner_display_names(state: &Arc<AppState>) -> Vec<String> {
+    state
+        .profile_repo
+        .list()
+        .await
+        .map(|profiles| {
+            profiles
+                .into_iter()
+                .filter(|p| p.role == Role::Owner)
+                .map(|p| p.display_name)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A `PermissionDecision::Denied` as a 403: the role that can grant it, and — when the household
+/// has one — the actual owner(s) by name, so a client can say who to ask rather than only what
+/// role is needed.
+async fn permission_denied(
+    state: &Arc<AppState>,
+    reason: &'static str,
+    grantable_by: Role,
+) -> (StatusCode, Json<Value>) {
+    let owners = owner_display_names(state).await;
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": reason,
+            "who_can_grant": grantable_by.as_str(),
+            "owners": owners,
+        })),
+    )
 }
 
 // ── Connecting a source ────────────────────────────────────────────────────

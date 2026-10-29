@@ -178,7 +178,31 @@ impl DeviceControlMcpServer {
             .unwrap_or_default();
         match may_control_device(role, device_id, &allowed, guest_until, chrono::Utc::now()) {
             PermissionDecision::Allowed => None,
-            PermissionDecision::Denied { reason, .. } => Some(guidance(reason.to_string())),
+            PermissionDecision::Denied { reason, .. } => {
+                Some(guidance(self.named_denial(reason).await))
+            }
+        }
+    }
+
+    /// A denial reason, with the household's owner(s) named when there are any to name — so a
+    /// spoken refusal says who to ask, not just what's missing.
+    async fn named_denial(&self, reason: &str) -> String {
+        let owners: Vec<String> = self
+            .profile_repo
+            .list()
+            .await
+            .map(|profiles| {
+                profiles
+                    .into_iter()
+                    .filter(|p| p.role == Role::Owner)
+                    .map(|p| p.display_name)
+                    .collect()
+            })
+            .unwrap_or_default();
+        match owners.as_slice() {
+            [] => reason.to_string(),
+            [name] => format!("{reason} Ask {name}."),
+            names => format!("{reason} Ask {}.", names.join(" or ")),
         }
     }
 
@@ -1629,6 +1653,58 @@ mod tests {
             .unwrap();
         let text = tool_text(&result);
         assert!(text.contains("power=on"), "expected success, got: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_guests_denial_names_the_owner_to_ask() {
+        use pond_core::user_data::domain::profile::CreateProfileRequest;
+        use pond_core::user_data::ports::profile::ProfileRepository;
+
+        let profiles: Arc<dyn ProfileRepository + Send + Sync> =
+            Arc::new(pond_core::user_data::mocks::mock_profile::MockProfileRepository::new());
+        // The first profile created in an empty household becomes its owner.
+        profiles
+            .create(CreateProfileRequest {
+                display_name: "Ada".to_string(),
+                avatar_emoji: "X".to_string(),
+            })
+            .await
+            .unwrap();
+        let guest = profiles
+            .create(CreateProfileRequest {
+                display_name: "Visiting Friend".to_string(),
+                avatar_emoji: "Y".to_string(),
+            })
+            .await
+            .unwrap();
+        profiles.set_role(&guest.id, Role::Guest, None).await.unwrap();
+
+        let server = DeviceControlMcpServer::new(
+            Arc::new(StubControl),
+            Arc::new(OneLightInKitchen),
+            Arc::new(FixedGuestAccess(std::collections::HashSet::new())),
+            Arc::new(pond_core::user_data::mocks::mock_guest_device_access::MockGuestDeviceAccess),
+            profiles,
+        );
+        let mut ctx = make_ctx(server.clone()).await;
+        ctx.extensions.insert(ProfileScope::Owner(guest.id));
+        ctx.extensions.insert(Role::Guest);
+        let result = server
+            .set_device_state(
+                ctx,
+                Parameters(SetDeviceStateParams {
+                    device_id: "lamp".into(),
+                    power: Some(true),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.contains("Ask Ada."),
+            "expected the denial to name the owner, got: {text}"
+        );
     }
 
     #[tokio::test]
