@@ -222,6 +222,8 @@ fn recorders() -> &'static Recorders {
             Arc::new(OneLightRegistry),
             Arc::new(pond_core::user_data::mocks::mock_room_registry::MockRoomRegistry),
             Arc::new(pond_core::user_data::mocks::mock_guest_room_access::MockGuestRoomAccess),
+            Arc::new(pond_core::user_data::mocks::mock_guest_device_access::MockGuestDeviceAccess),
+            Arc::new(pond_core::user_data::mocks::mock_profile::MockProfileRepository::new()),
             Arc::new(pond_core::user_data::mocks::mock_skill::MockSkillRepository::default()),
             device_control.clone(),
             None,
